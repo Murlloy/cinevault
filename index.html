@@ -1608,7 +1608,7 @@ async function getMovieDetails(tmdbId) {
 
   // Check MockAPI cache first
   try {
-    const res = await fetch(`${MOCKAPI_BASE}/moviesCache?tmdb_id=${tmdbId}`);
+    const res = await fetch(`${MOCKAPI_BASE}/MoviesCache?tmdb_id=${tmdbId}`);
     const items = await res.json();
     if (items && items.length > 0) {
       moviesCache[tmdbId] = items[0];
@@ -1631,7 +1631,7 @@ async function getMovieDetails(tmdbId) {
         cast: movie.cast, director: movie.director, trailer: movie.trailer,
         last_update: new Date().toISOString()
       };
-      await fetch(`${MOCKAPI_BASE}/moviesCache`, {
+      await fetch(`${MOCKAPI_BASE}/MoviesCache`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cacheData)
