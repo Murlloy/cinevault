@@ -1315,7 +1315,7 @@
 // ============================================
 // CONFIGURATION
 // ============================================
-const MOCKAPI_BASE = 'https://6a320c817bc5e1c612668339.mockapi.io/api';
+const MOCKAPI_BASE = 'https://6a320c817bc5e1c612668339.mockapi.io/api/';
 const TMDB_KEY = '20795adcbf9ed23c4e6b71218c15044d';
 const TMDB_BASE = 'https://api.themoviedb.org/3';
 const TMDB_IMG = 'https://image.tmdb.org/t/p/';
@@ -1604,34 +1604,60 @@ async function fetchTMDB(endpoint, params = {}) {
 }
 
 async function getMovieDetails(tmdbId) {
-  if (moviesCache[tmdbId]) return moviesCache[tmdbId];
+  // Only use local cache if it's a FULL entry (has title + poster already resolved)
+  const cached = moviesCache[tmdbId];
+  if (cached && cached.title && cached.poster && cached.director !== undefined) return cached;
 
-  // Check MockAPI cache first
+  // Check MockAPI cache — skip gracefully on 404 or non-array response
   try {
-    const res = await fetch(`${MOCKAPI_BASE}/MoviesCache?tmdb_id=${tmdbId}`);
-    const items = await res.json();
-    if (items && items.length > 0) {
-      moviesCache[tmdbId] = items[0];
-      return items[0];
+    const res = await fetch(`${MOCKAPI_BASE}/moviesCache?tmdb_id=${tmdbId}`);
+    if (res.ok) {
+      const items = await res.json();
+      if (Array.isArray(items) && items.length > 0 && items[0].title) {
+        const entry = items[0];
+        // Normalise MockAPI cache entry to match TMDB shape
+        const movie = {
+          id: entry.tmdb_id || tmdbId,
+          tmdb_id: entry.tmdb_id || tmdbId,
+          title: entry.title || '',
+          original_title: entry.title || '',
+          year: entry.year || '',
+          poster: entry.poster || '',
+          backdrop: entry.backdrop || '',
+          synopsis: entry.synopsis || '',
+          genres: Array.isArray(entry.genres) ? entry.genres : [],
+          genre_ids: [],
+          duration: entry.duration || '',
+          imdb_rating: entry.imdb_rating || 'N/A',
+          director: entry.director || '',
+          cast: Array.isArray(entry.cast) ? entry.cast : [],
+          trailer: entry.trailer || '',
+          country: '',
+          language: '',
+          release_date: entry.year ? `${entry.year}-01-01` : ''
+        };
+        moviesCache[tmdbId] = movie;
+        return movie;
+      }
     }
   } catch {}
 
-  // Fetch from TMDB
+  // Fetch full details from TMDB (with credits + videos)
   try {
     const data = await fetchTMDB(`/movie/${tmdbId}`, { append_to_response: 'credits,videos' });
     const movie = normalizeMovie(data);
     moviesCache[tmdbId] = movie;
 
-    // Save to cache
+    // Save to MockAPI cache (fire-and-forget)
     try {
       const cacheData = {
-        tmdb_id: tmdbId, title: movie.title, year: movie.year,
+        tmdb_id: String(tmdbId), title: movie.title, year: movie.year,
         poster: movie.poster, backdrop: movie.backdrop, synopsis: movie.synopsis,
         genres: movie.genres, duration: movie.duration, imdb_rating: movie.imdb_rating,
         cast: movie.cast, director: movie.director, trailer: movie.trailer,
         last_update: new Date().toISOString()
       };
-      await fetch(`${MOCKAPI_BASE}/MoviesCache`, {
+      fetch(`${MOCKAPI_BASE}/moviesCache`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(cacheData)
@@ -1647,8 +1673,10 @@ async function getMovieDetails(tmdbId) {
 
 function normalizeMovie(data) {
   const director = data.credits?.crew?.find(c => c.job === 'Director');
-  const cast = (data.credits?.crew ? data.credits?.cast?.slice(0, 10) : []).map(a => ({
-    name: a.name, character: a.character,
+  // FIX: was incorrectly checking data.credits?.crew for cast — must use data.credits?.cast
+  const cast = (data.credits?.cast || []).slice(0, 10).map(a => ({
+    name: a.name || '',
+    character: a.character || '',
     photo: a.profile_path ? `${TMDB_IMG}w185${a.profile_path}` : ''
   }));
   const trailer = data.videos?.results?.find(v => v.type === 'Trailer' && v.site === 'YouTube');
@@ -1656,22 +1684,22 @@ function normalizeMovie(data) {
   return {
     id: data.id,
     tmdb_id: data.id,
-    imdb_id: data.imdb_id,
-    title: data.title,
-    original_title: data.original_title,
+    imdb_id: data.imdb_id || '',
+    title: data.title || data.original_title || '',
+    original_title: data.original_title || '',
     year: data.release_date ? data.release_date.slice(0, 4) : '',
     poster: data.poster_path ? `${TMDB_IMG}w300${data.poster_path}` : '',
     backdrop: data.backdrop_path ? `${TMDB_IMG}w1280${data.backdrop_path}` : '',
-    synopsis: data.overview,
+    synopsis: data.overview || '',
     genres: data.genres?.map(g => g.name) || [],
     genre_ids: data.genres?.map(g => g.id) || [],
-    duration: data.runtime ? `${Math.floor(data.runtime/60)}h ${data.runtime%60}m` : '',
-    imdb_rating: data.vote_average ? data.vote_average.toFixed(1) : 'N/A',
+    duration: data.runtime ? `${Math.floor(data.runtime / 60)}h ${data.runtime % 60}m` : '',
+    imdb_rating: data.vote_average ? parseFloat(data.vote_average).toFixed(1) : 'N/A',
     director: director ? director.name : '',
     cast,
     trailer: trailer ? trailer.key : '',
     country: data.production_countries?.[0]?.name || '',
-    language: data.original_language,
+    language: data.original_language || '',
     release_date: data.release_date || ''
   };
 }
@@ -1935,10 +1963,9 @@ async function openMovieDetail(tmdbId) {
     </div>
   `;
 
-  let movie = moviesCache[tmdbId];
-  if (!movie || !movie.director) {
-    movie = await getMovieDetails(tmdbId);
-  }
+  // Always fetch full details — getMovieDetails handles local cache internally
+  // and skips re-fetching if the entry is already complete
+  let movie = await getMovieDetails(tmdbId);
 
   if (!movie) {
     content.innerHTML = `<div style="padding:80px;text-align:center;">
